@@ -1,11 +1,20 @@
 #!/bin/sh
 
-### kickout.sh #####
+# Copyright (c) 2026 XMyFun
+# MIT License - See README for details
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files, to deal in the Software without
+# restriction, including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software.
+#
 
-# threshold (dBm), always negative 
+### kickout.sh ###
+
+# threshold (dBm), always negative
 thr=-75
 
-# mode (string) = "white" or "black", always minuscule !
+## mode (string) = "white" or "black", always minuscule !
 # black: only the clients in the blacklist can be kicked out.
 # white: kick out all the clients except those in the whitelist.
 mode="white"
@@ -24,8 +33,42 @@ if [[ ! -f "$logfile" ]]; then
 	echo "$datetime: kickout-wifi log file created." > $logfile
 fi
 
+# Enhanced signal strength detection for multi-platform compatibility
+get_signal_strength() {
+    local mac=$1
+    local wlan=$2
+
+    # Suppress stderr to avoid error messages from iw command
+    local output=$(iw $wlan station get $mac 2>/dev/null)
+
+    # Method 1: Try "signal avg" pattern (most common)
+    # Store result and try field 4 as fallback
+    local rssi=$(echo "$output" | grep -E "signal.*avg" | tail -1 | awk '{print $3}')
+    if [ -z "$rssi" ] || [ "$rssi" = "-1" ]; then
+        rssi=$(echo "$output" | grep -E "signal.*avg" | tail -1 | awk '{print $4}')
+    fi
+
+    # Method 2: Try "signal" with dBm pattern if method 1 fails
+    if [ -z "$rssi" ] || [ "$rssi" = "-1" ]; then
+        rssi=$(echo "$output" | grep -E "signal.*dBm" | tail -1 | awk '{print $3}')
+    fi
+
+    # Method 3: Extract the last numeric value before "dBm"
+    # More precise pattern to avoid false matches
+    if [ -z "$rssi" ] || [ "$rssi" = "-1" ]; then
+        rssi=$(echo "$output" | grep -E "(signal|avg).*[0-9-][0-9]* dBm" | grep -o "[0-9-][0-9]* dBm" | tail -1 | awk '{print $1}')
+    fi
+
+    # Validate the result
+    if [ -z "$rssi" ] || [ "$rssi" = "-1" ]; then
+        echo "unknown"
+    else
+        echo "$rssi"
+    fi
+}
+
 # function deauth
-function deauth () 
+function deauth ()
 {
 	mac=$1
 	wlan=$2
@@ -40,40 +83,36 @@ function deauth ()
 # wlanlist for multiple wlans (e.g., 5GHz/2.4GHz)
 wlanlist=$(ifconfig | grep wlan | grep -v sta | awk '{ print $1 }')
 
-#loop for each wlan
+# loop for each wlan
 for wlan in $wlanlist
 do
 	maclist=""; maclist=$(iw $wlan station dump | grep Station | awk '{ print $2 }')
-	#loop for each associated client (station)
+	# loop for each associated client (station)
 	for mac in $maclist
 	do
-		echo "$blacklist" | grep -q -e $mac
+		echo "$blacklist" | grep -q -F "$mac"
 		inBlack=$?	#0 for in Blacklist!
-		echo "$whitelist" | grep -q -e $mac
+		echo "$whitelist" | grep -q -F "$mac"
 		inWhite=$?	#0 for in Whitelist!
 
 		if [ $mode = "black" -a $inBlack -eq 0 ] || [ $mode = "white" -a $inWhite -ne 0 ]
+		then
+			rssi=$(get_signal_strength $mac $wlan)
+
+			# Validate rssi is a valid number before comparison
+			if [ "$rssi" != "unknown" ] && printf '%d' "$rssi" > /dev/null 2>&1 && [ $rssi -lt $thr ]
 			then
-				rssi=""; rssi=$(iw $wlan station get $mac | \
-				grep "signal avg" | awk '{ print $3 }')
-				if [ $rssi -lt $thr ]
-					then
-						##skip wlan if necessary
-						#if [ $wlan = wlan0 ];then
-						#	echo "ignored $mac with $rssi dBm (thr=$thr) at $wlan" | logger
-						#	echo "$datetime: ignored $1 with $rssi dBm (thr=$thr) at $wlan" >> $logfile
-						#	continue
-						#fi
-						##
-						deauth $mac $wlan $rssi
-				fi
+				deauth $mac $wlan $rssi
+			else
+				echo "$datetime: Skipped $mac - invalid signal: $rssi" >> $logfile
+			fi
 		fi
-####
 	done
 done
-####
 
+
+## Auto-loop execution mode (uncomment for continuous operation)
 # sleep 10s and call itself.
-#sleep 10; /bin/sh $0 &
+# sleep 10; /bin/sh $0 &
 
-###
+### END of kickout.sh
